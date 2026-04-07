@@ -70,6 +70,98 @@ var task2 = _billingApi.GetInvoicesAsync(patientId);
 await Task.WhenAll(task1, task2);
 ```
 
+**More examples (good for L1 follow-up questions)**
+
+**A) Parallel independent calls + combine result**
+```csharp
+public async Task<PatientDashboardDto> GetDashboardAsync(Guid patientId)
+{
+    var profileTask = _patientApi.GetProfileAsync(patientId);
+    var visitsTask = _visitApi.GetRecentVisitsAsync(patientId);
+    var billsTask = _billingApi.GetOutstandingBillsAsync(patientId);
+
+    await Task.WhenAll(profileTask, visitsTask, billsTask);
+
+    return new PatientDashboardDto
+    {
+        Profile = await profileTask,
+        Visits = await visitsTask,
+        OutstandingBills = await billsTask
+    };
+}
+```
+
+**B) Collect results from many tasks**
+```csharp
+public async Task<Dictionary<Guid, LabResult>> GetLabResultsAsync(List<Guid> patientIds)
+{
+    var tasks = patientIds.Select(async id =>
+    {
+        var result = await _labApi.GetLatestAsync(id);
+        return (id, result);
+    });
+
+    var pairs = await Task.WhenAll(tasks);
+    return pairs.ToDictionary(x => x.id, x => x.result);
+}
+```
+
+**C) Timeout + cancellation token**
+```csharp
+public async Task<string> GetWithTimeoutAsync(Guid patientId, CancellationToken ct)
+{
+    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+    var profileTask = _patientApi.GetProfileRawAsync(patientId, linkedCts.Token);
+    var riskTask = _riskApi.GetRiskRawAsync(patientId, linkedCts.Token);
+
+    await Task.WhenAll(profileTask, riskTask);
+    return $"{await profileTask} | {await riskTask}";
+}
+```
+
+**D) Error handling pattern (one failing task fails `WhenAll`)**
+```csharp
+try
+{
+    var a = _serviceA.FetchAsync();
+    var b = _serviceB.FetchAsync(); // if this fails, Task.WhenAll throws
+    await Task.WhenAll(a, b);
+}
+catch (Exception ex)
+{
+    _logger.LogError(ex, "Parallel fetch failed");
+    throw;
+}
+```
+
+**E) Limit concurrency (important for large lists)**
+```csharp
+public async Task ProcessPatientsAsync(IEnumerable<Guid> ids)
+{
+    using var throttler = new SemaphoreSlim(5); // max 5 concurrent calls
+
+    var tasks = ids.Select(async id =>
+    {
+        await throttler.WaitAsync();
+        try
+        {
+            await _patientApi.RefreshCacheAsync(id);
+        }
+        finally
+        {
+            throttler.Release();
+        }
+    });
+
+    await Task.WhenAll(tasks);
+}
+```
+
+**Interview one-liner**
+- "I use `Task.WhenAll` only for independent tasks; for dependent steps I await sequentially."
+
 ---
 
 ## 7) What is REST API and how do you design one?
